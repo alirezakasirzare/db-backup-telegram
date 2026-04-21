@@ -60,6 +60,30 @@ send_to_telegram() {
     >/dev/null
 }
 
+# Run pg_dump inside the DB container. A bare `docker exec ... pg_dump` often gets exit 126
+# because PATH for non-login exec does not include PostgreSQL's bin dir; login shells fix that.
+# Optional: set PG_DUMP_PATH in .env to a full path (e.g. Bitnami: /opt/bitnami/postgresql/bin/pg_dump).
+docker_pg_dump() {
+  local container="$1" user="$2" db="$3"
+  local uq dq inner pq shell_cmd
+  uq=$(printf '%q' "${user}")
+  dq=$(printf '%q' "${db}")
+  pq=$(printf '%q' "${PG_DUMP_PATH:-pg_dump}")
+  inner="${pq} -U ${uq} -d ${dq} --no-owner --no-acl"
+  if docker exec "${container}" test -x /bin/bash 2>/dev/null; then
+    shell_cmd=(/bin/bash -lc "${inner}")
+  elif docker exec "${container}" test -x /usr/bin/bash 2>/dev/null; then
+    shell_cmd=(/usr/bin/bash -lc "${inner}")
+  else
+    shell_cmd=(/bin/sh -lc "${inner}")
+  fi
+  if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
+    docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "${container}" "${shell_cmd[@]}"
+  else
+    docker exec "${container}" "${shell_cmd[@]}"
+  fi
+}
+
 IFS=',' read -r -a targets <<< "${BACKUP_TARGETS}"
 for raw in "${targets[@]}"; do
   spec="$(echo "${raw}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -88,16 +112,10 @@ for raw in "${targets[@]}"; do
 
   echo "Dumping ${db} from ${container} (user ${user}) -> ${out}"
 
-  if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
-    dump_cmd=(docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "${container}" pg_dump -U "${user}" -d "${db}" --no-owner --no-acl)
-  else
-    dump_cmd=(docker exec "${container}" pg_dump -U "${user}" -d "${db}" --no-owner --no-acl)
-  fi
-
   dump_err="$(mktemp)"
   set +e
   set +u
-  "${dump_cmd[@]}" 2>"${dump_err}" | gzip -9 > "${out}"
+  docker_pg_dump "${container}" "${user}" "${db}" 2>"${dump_err}" | gzip -9 > "${out}"
   # With `set -u`, PIPESTATUS[1] can be "unbound" on some Bash builds if the array is short.
   dump_ec="${PIPESTATUS[0]:-1}"
   gzip_ec="${PIPESTATUS[1]:-0}"
@@ -116,6 +134,12 @@ for raw in "${targets[@]}"; do
     fi
     if grep -qiE 'role .* does not exist|FATAL:.*role' "${dump_err}" 2>/dev/null; then
       echo "Hint: BACKUP_TARGETS format is container:database:POSTGRES_ROLE (e.g. postgres). The third field is a DB role name, not an app password." >&2
+    fi
+    if [[ "${dump_ec}" -eq 126 ]]; then
+      echo "Hint: exit 126 means pg_dump could not be executed (missing binary, PATH, or permissions)." >&2
+      if [[ ! -s "${dump_err}" ]]; then
+        echo "Hint: stderr was empty; on the host run: docker exec ${container} bash -lc 'command -v pg_dump; pg_dump --version' (use sh -lc if bash is missing). Set PG_DUMP_PATH in .env to the full path if pg_dump is not on the default PATH." >&2
+      fi
     fi
     rm -f "${dump_err}" "${out}" 2>/dev/null || true
     failures=$((failures + 1))
