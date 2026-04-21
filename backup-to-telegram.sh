@@ -94,12 +94,31 @@ for raw in "${targets[@]}"; do
     dump_cmd=(docker exec "${container}" pg_dump -U "${user}" -d "${db}" --no-owner --no-acl)
   fi
 
-  if ! "${dump_cmd[@]}" | gzip -9 > "${out}"; then
-    echo "pg_dump failed for ${container}:${db}" >&2
-    rm -f "${out}" 2>/dev/null || true
+  dump_err="$(mktemp)"
+  set +e
+  "${dump_cmd[@]}" 2>"${dump_err}" | gzip -9 > "${out}"
+  dump_ec="${PIPESTATUS[0]}"
+  gzip_ec="${PIPESTATUS[1]}"
+  set -e
+
+  if [[ "${dump_ec}" -ne 0 ]] || [[ "${gzip_ec}" -ne 0 ]]; then
+    echo "pg_dump failed for ${container}:${db} (pg_dump/docker exit ${dump_ec}, gzip exit ${gzip_ec})" >&2
+    if [[ -s "${dump_err}" ]]; then
+      echo "--- pg_dump / docker stderr ---" >&2
+      cat "${dump_err}" >&2
+      echo "--- end stderr ---" >&2
+    fi
+    if grep -qiE 'password|authentication failed' "${dump_err}" 2>/dev/null; then
+      echo "Hint: set POSTGRES_PASSWORD in .env if this role requires a password." >&2
+    fi
+    if grep -qiE 'role .* does not exist|FATAL:.*role' "${dump_err}" 2>/dev/null; then
+      echo "Hint: BACKUP_TARGETS format is container:database:POSTGRES_ROLE (e.g. postgres). The third field is a DB role name, not an app password." >&2
+    fi
+    rm -f "${dump_err}" "${out}" 2>/dev/null || true
     failures=$((failures + 1))
     continue
   fi
+  rm -f "${dump_err}" 2>/dev/null || true
 
   if [[ ! -s "${out}" ]]; then
     echo "Empty dump file for ${container}:${db}" >&2
