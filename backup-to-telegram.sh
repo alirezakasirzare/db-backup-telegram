@@ -96,9 +96,12 @@ for raw in "${targets[@]}"; do
 
   dump_err="$(mktemp)"
   set +e
+  set +u
   "${dump_cmd[@]}" 2>"${dump_err}" | gzip -9 > "${out}"
-  dump_ec="${PIPESTATUS[0]}"
-  gzip_ec="${PIPESTATUS[1]}"
+  # With `set -u`, PIPESTATUS[1] can be "unbound" on some Bash builds if the array is short.
+  dump_ec="${PIPESTATUS[0]:-1}"
+  gzip_ec="${PIPESTATUS[1]:-0}"
+  set -u
   set -e
 
   if [[ "${dump_ec}" -ne 0 ]] || [[ "${gzip_ec}" -ne 0 ]]; then
