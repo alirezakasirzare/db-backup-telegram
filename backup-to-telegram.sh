@@ -12,11 +12,28 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-# Load .env (use KEY=value; quote values that contain spaces or #)
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-set +a
+# Load .env without `source` so values like CRON_SCHEDULE=0 2 * * * are not re-parsed by the shell.
+load_env_file() {
+  local env_file="$1" raw_line line key val
+  while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
+    line="${raw_line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      val="${BASH_REMATCH[2]}"
+      if [[ "${val}" =~ ^\"(.*)\"$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      elif [[ "${val}" =~ ^\'(.*)\'$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      fi
+      printf -v "${key}" '%s' "${val}"
+      export "${key}"
+    fi
+  done < "${env_file}"
+}
+
+load_env_file "${ENV_FILE}"
 
 : "${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}"
 : "${TELEGRAM_CHAT_ID:?Set TELEGRAM_CHAT_ID in .env}"

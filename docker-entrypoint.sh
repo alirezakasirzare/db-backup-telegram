@@ -11,12 +11,24 @@ if [[ ! -S /var/run/docker.sock ]]; then
   exit 1
 fi
 
-set -a
-# shellcheck disable=SC1091
-source /app/.env
-set +a
-
-CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
+# Do not `source` .env: lines like CRON_SCHEDULE=0 2 * * * make the shell run extra words
+# and glob `*` to filenames in /app (e.g. backup-to-telegram.sh).
+cron_line_raw="$(grep -E '^[[:space:]]*CRON_SCHEDULE=' /app/.env 2>/dev/null | tail -n1 || true)"
+file_cron=""
+if [[ -n "${cron_line_raw}" ]]; then
+  file_cron="${cron_line_raw#*=}"
+  file_cron="${file_cron%$'\r'}"
+  if [[ "${file_cron}" =~ ^\"(.*)\"$ ]]; then
+    file_cron="${BASH_REMATCH[1]}"
+  elif [[ "${file_cron}" =~ ^\'(.*)\'$ ]]; then
+    file_cron="${BASH_REMATCH[1]}"
+  fi
+fi
+if [[ -n "${file_cron}" ]]; then
+  CRON_SCHEDULE="${file_cron}"
+else
+  CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
+fi
 
 mkdir -p /etc/crontabs
 umask 077
