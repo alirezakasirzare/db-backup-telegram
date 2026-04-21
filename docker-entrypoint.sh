@@ -30,11 +30,11 @@ else
   CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
 fi
 
-mkdir -p /etc/crontabs
 umask 077
-cron_line="${CRON_SCHEDULE} /app/backup-to-telegram.sh >> /proc/1/fd/1 2>> /proc/1/fd/2"
-printf '%s\n' "${cron_line}" >/etc/crontabs/root
-chmod 600 /etc/crontabs/root
+# supercronic: standard user crontab (5 fields + command); logs go to process stdout/stderr
+cron_line="${CRON_SCHEDULE} /app/backup-to-telegram.sh"
+printf '%s\n' "${cron_line}" >/app/crontab
+chmod 600 /app/crontab
 
-echo "Starting dcron in foreground (schedule: ${CRON_SCHEDULE} UTC fields — standard 5-field crontab)."
-exec /usr/sbin/crond -f -l 8
+echo "Starting supercronic (schedule: ${CRON_SCHEDULE} — 5-field crontab, container TZ/UTC)."
+exec /usr/local/bin/supercronic --passthrough-logs /app/crontab
